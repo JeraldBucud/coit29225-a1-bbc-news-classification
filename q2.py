@@ -1206,7 +1206,22 @@ def display_random_word2vec_predictions(
         print(f"Text:      {article_preview}...")
 
 
+def display_menu():
+    """
+    Display the BBC News text classification menu and return the
+    user's selected option.
 
+    Returns:
+        str: Menu option selected by the user.
+    """
+
+    print("\nBBC News Text Classification")
+    print("=============================")
+    print("1. TF-IDF + MLP")
+    print("2. Word2Vec + MLP")
+    print("3. Exit Application")
+
+    return input("\nSelect an option: ").strip()
 
 
 def main():
@@ -1215,24 +1230,33 @@ def main():
     """
     data = load_data(DATA_FILE)
 
-    inspect_data(data)
-
     cleaned_data = clean_data(data)
-
-    display_cleaning_results(
-        data,
-        cleaned_data,
-    )
 
     processed_data = preprocess_data(cleaned_data)
 
-    display_preprocessing_results(processed_data)
+    while True:
+        choice = display_menu()
 
-    # Run the TF-IDF + MLP classification pipeline.
-    run_tfidf_mlp(processed_data)
+        if choice == "1":
+            print("\nRunning TF-IDF + MLP classification...\n")
 
-    # Run the Word2Vec + MLP classification pipeline.
-    run_word2vec_mlp(processed_data)
+            run_tfidf_mlp(processed_data)
+
+        elif choice == "2":
+            print("\nRunning Word2Vec + MLP classification...\n")
+
+            run_word2vec_mlp(processed_data)
+
+        elif choice == "3":
+            print("\nExiting BBC News Text Classification.")
+            break
+
+        else:
+            print(
+                "\nInvalid option. "
+                "Please select 1, 2, or 3."
+            )
+
 
 if __name__ == "__main__":
     main()
