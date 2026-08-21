@@ -131,3 +131,50 @@ The application generates:
 and:
 
 `output/word2vec/accuracy_curve.png`
+
+
+## Application Menu
+
+The final application provides a menu that allows the user to select either
+classification approach independently.
+
+```text
+BBC News Text Classification
+=============================
+1. TF-IDF + MLP
+2. Word2Vec + MLP
+3. Exit Application
+```
+
+Invalid menu selections are rejected and the menu is displayed again.
+
+The dataset is loaded, cleaned, and preprocessed once when the application
+starts. The selected classification pipeline is then executed based on the
+user's choice.
+
+## Model Comparison
+
+The final validated results are:
+
+| Metric | TF-IDF + MLP | Word2Vec + MLP |
+|---|---:|---:|
+| Best Validation Accuracy | 97.35% | 96.76% |
+| Best Epoch | 2 | 7 |
+| Test Accuracy | 96.95% | 96.01% |
+| Precision | 97.04% | 96.24% |
+| Recall | 96.95% | 96.01% |
+| F1-score | 96.95% | 96.02% |
+
+TF-IDF + MLP achieved slightly higher overall classification performance on
+the BBC News dataset.
+
+TF-IDF converged very quickly, reaching its best validation performance at
+epoch 2. Word2Vec + MLP converged more gradually and reached its best
+validation performance at epoch 7.
+
+TF-IDF represents each article using a sparse 5,000-feature vector based on
+term importance. Word2Vec represents each article using a compact
+100-dimensional dense vector obtained by averaging learned word embeddings.
+
+Both approaches achieved strong classification performance, but TF-IDF was
+slightly more effective for this topic-based BBC News classification task.
