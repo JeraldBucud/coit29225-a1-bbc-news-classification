@@ -30,11 +30,15 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from copy import deepcopy
+import numpy as np
+from gensim.models import Word2Vec
 
 # Path to the supplied BBC News dataset.
 DATA_FILE = "data/BBCNews.csv"
 RANDOM_STATE = 42
 TFIDF_OUTPUT_DIR = "output/tfidf"
+WORD2VEC_OUTPUT_DIR = "output/word2vec"
+WORD2VEC_VECTOR_SIZE = 100
 
 CATEGORY_NAMES = {
     "business": "Business",
@@ -249,7 +253,7 @@ def display_preprocessing_results(data):
         f"{token_counts.max()}"
     )
 
-def split_dataset(data):
+def split_dataset(data, feature_column):
     """
     Split the preprocessed BBC News dataset into training, validation,
     and testing subsets.
@@ -265,7 +269,7 @@ def split_dataset(data):
         tuple: Training, validation, and testing text and labels.
     """
 
-    texts = data["processed_text"]
+    texts = data[feature_column]
     labels = data["category"]
 
     # Keep 20% of the complete dataset separate for final testing.
@@ -482,7 +486,10 @@ def run_tfidf_mlp(data):
         train_labels,
         validation_labels,
         test_labels,
-    ) = split_dataset(data)
+    ) = split_dataset(
+        data,
+        "processed_text"
+    )
 
     (
         vectorizer,
@@ -729,6 +736,479 @@ def display_random_predictions(
         )
 
 
+def create_document_vector(tokens, word2vec_model):
+    """
+    Create one article vector by averaging the Word2Vec vectors of
+    recognised words in the article.
+
+    Args:
+        tokens (list): Preprocessed article tokens.
+        word2vec_model (Word2Vec): Trained Word2Vec model.
+
+    Returns:
+        numpy.ndarray: Averaged article vector.
+    """
+
+    word_vectors = [
+        word2vec_model.wv[token]
+        for token in tokens
+        if token in word2vec_model.wv
+    ]
+
+    if not word_vectors:
+        return np.zeros(
+            WORD2VEC_VECTOR_SIZE,
+            dtype=float,
+        )
+
+    return np.mean(
+        word_vectors,
+        axis=0,
+    )
+
+
+def create_word2vec_features(
+    train_tokens,
+    validation_tokens,
+    test_tokens,
+):
+    """
+    Train Word2Vec on the training articles and convert each article
+    into an averaged Word2Vec feature vector.
+
+    Args:
+        train_tokens (pandas.Series): Training token lists.
+        validation_tokens (pandas.Series): Validation token lists.
+        test_tokens (pandas.Series): Testing token lists.
+
+    Returns:
+        tuple: Trained Word2Vec model and document feature matrices.
+    """
+
+    word2vec_model = Word2Vec(
+        sentences=train_tokens.tolist(),
+        vector_size=WORD2VEC_VECTOR_SIZE,
+        window=5,
+        min_count=2,
+        workers=1,
+        seed=RANDOM_STATE,
+        epochs=20,
+    )
+
+    train_features = np.vstack([
+        create_document_vector(
+            tokens,
+            word2vec_model,
+        )
+        for tokens in train_tokens
+    ])
+
+    validation_features = np.vstack([
+        create_document_vector(
+            tokens,
+            word2vec_model,
+        )
+        for tokens in validation_tokens
+    ])
+
+    test_features = np.vstack([
+        create_document_vector(
+            tokens,
+            word2vec_model,
+        )
+        for tokens in test_tokens
+    ])
+
+    return (
+        word2vec_model,
+        train_features,
+        validation_features,
+        test_features,
+    )
+
+
+def train_word2vec_mlp(
+    train_features,
+    validation_features,
+    train_labels,
+    validation_labels,
+    epochs=30,
+):
+    """
+    Train an MLP classifier using averaged Word2Vec article vectors.
+
+    Args:
+        train_features: Word2Vec training feature matrix.
+        validation_features: Word2Vec validation feature matrix.
+        train_labels (pandas.Series): Training labels.
+        validation_labels (pandas.Series): Validation labels.
+        epochs (int): Number of training epochs.
+
+    Returns:
+        tuple: Best trained model and training history.
+    """
+
+    model = MLPClassifier(
+        hidden_layer_sizes=(128,),
+        activation="relu",
+        solver="adam",
+        batch_size=32,
+        learning_rate_init=0.001,
+        random_state=RANDOM_STATE,
+    )
+
+    classes = sorted(train_labels.unique())
+
+    loss_history = []
+    training_accuracy_history = []
+    validation_accuracy_history = []
+
+    best_model = None
+    best_validation_accuracy = 0.0
+    best_epoch = 0
+
+    for epoch in range(epochs):
+        model.partial_fit(
+            train_features,
+            train_labels,
+            classes=classes,
+        )
+
+        training_predictions = model.predict(
+            train_features
+        )
+
+        validation_predictions = model.predict(
+            validation_features
+        )
+
+        training_accuracy = accuracy_score(
+            train_labels,
+            training_predictions,
+        )
+
+        validation_accuracy = accuracy_score(
+            validation_labels,
+            validation_predictions,
+        )
+
+        loss_history.append(model.loss_)
+        training_accuracy_history.append(
+            training_accuracy
+        )
+        validation_accuracy_history.append(
+            validation_accuracy
+        )
+
+        if validation_accuracy > best_validation_accuracy:
+            best_validation_accuracy = validation_accuracy
+            best_epoch = epoch + 1
+            best_model = deepcopy(model)
+
+        print(
+            f"Epoch {epoch + 1:02d}/{epochs} - "
+            f"Loss: {model.loss_:.4f} - "
+            f"Training Accuracy: {training_accuracy:.4f} - "
+            f"Validation Accuracy: {validation_accuracy:.4f}"
+        )
+
+    history = {
+        "loss": loss_history,
+        "training_accuracy": training_accuracy_history,
+        "validation_accuracy": validation_accuracy_history,
+        "best_epoch": best_epoch,
+        "best_validation_accuracy": best_validation_accuracy,
+    }
+
+    return best_model, history
+
+
+def run_word2vec_mlp(data):
+    """
+    Run the Word2Vec + MLP training pipeline.
+
+    Args:
+        data (pandas.DataFrame): Preprocessed BBC News dataset.
+    """
+
+    (
+        train_tokens,
+        validation_tokens,
+        test_tokens,
+        train_labels,
+        validation_labels,
+        test_labels,
+    ) = split_dataset(
+        data,
+        "tokens",
+    )
+
+    (
+        word2vec_model,
+        train_features,
+        validation_features,
+        test_features,
+    ) = create_word2vec_features(
+        train_tokens,
+        validation_tokens,
+        test_tokens,
+    )
+
+    print("\nWord2Vec + MLP Dataset Split:")
+    print(f"Training samples: {len(train_labels)}")
+    print(f"Validation samples: {len(validation_labels)}")
+    print(f"Testing samples: {len(test_labels)}")
+
+    print(
+        f"Word2Vec vocabulary size: "
+        f"{len(word2vec_model.wv)}"
+    )
+
+    print(
+        f"Word2Vec vector size: "
+        f"{word2vec_model.vector_size}"
+    )
+
+    model, history = train_word2vec_mlp(
+        train_features,
+        validation_features,
+        train_labels,
+        validation_labels,
+    )
+
+    print(
+        "\nBest Word2Vec validation result:"
+        f"\nEpoch: {history['best_epoch']}"
+        f"\nValidation Accuracy: "
+        f"{history['best_validation_accuracy']:.4f}"
+    )
+
+    save_word2vec_training_curves(history)
+
+    predictions, metrics = evaluate_word2vec_model(
+        model,
+        test_features,
+        test_labels,
+    )
+
+    display_random_word2vec_predictions(
+        model,
+        word2vec_model,
+        test_tokens,
+        test_labels,
+    )
+
+    print("\nWord2Vec + MLP pipeline complete.")
+
+    return {
+        "model": model,
+        "word2vec_model": word2vec_model,
+        "history": history,
+        "metrics": metrics,
+        "predictions": predictions,
+    }
+
+    print("\nWord2Vec + MLP training complete.")
+
+
+def save_word2vec_training_curves(history):
+    """
+    Save the Word2Vec + MLP training curves required for Problem 2.
+
+    Args:
+        history (dict): Recorded loss and accuracy values by epoch.
+    """
+
+    Path(WORD2VEC_OUTPUT_DIR).mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    epochs = range(
+        1,
+        len(history["loss"]) + 1,
+    )
+
+    # -----------------------------------------------------------------------
+    # Training Loss Curve
+    # -----------------------------------------------------------------------
+
+    plt.figure(figsize=(9, 6))
+
+    plt.plot(
+        epochs,
+        history["loss"],
+        marker="o",
+    )
+
+    plt.title("Word2Vec + MLP Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(
+        f"{WORD2VEC_OUTPUT_DIR}/training_loss.png",
+        dpi=300,
+    )
+
+    plt.close()
+
+    # -----------------------------------------------------------------------
+    # Training and Validation Accuracy Curve
+    # -----------------------------------------------------------------------
+
+    plt.figure(figsize=(9, 6))
+
+    plt.plot(
+        epochs,
+        history["training_accuracy"],
+        marker="o",
+        label="Training Accuracy",
+    )
+
+    plt.plot(
+        epochs,
+        history["validation_accuracy"],
+        marker="o",
+        label="Validation Accuracy",
+    )
+
+    plt.title("Word2Vec + MLP Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(
+        f"{WORD2VEC_OUTPUT_DIR}/accuracy_curve.png",
+        dpi=300,
+    )
+
+    plt.close()
+
+    print(
+        f"\nWord2Vec training curves saved to: "
+        f"{WORD2VEC_OUTPUT_DIR}"
+    )
+
+
+def evaluate_word2vec_model(
+    model,
+    test_features,
+    test_labels,
+):
+    """
+    Evaluate the Word2Vec + MLP model on the final testing set.
+
+    Args:
+        model (MLPClassifier): Trained Word2Vec MLP classifier.
+        test_features: Word2Vec testing feature matrix.
+        test_labels (pandas.Series): True testing labels.
+
+    Returns:
+        tuple: Test predictions and calculated performance metrics.
+    """
+
+    predictions = model.predict(test_features)
+
+    accuracy = accuracy_score(
+        test_labels,
+        predictions,
+    )
+
+    (
+        precision,
+        recall,
+        f1_score,
+        _,
+    ) = precision_recall_fscore_support(
+        test_labels,
+        predictions,
+        average="weighted",
+        zero_division=0,
+    )
+
+    print("\nWord2Vec + MLP Test Results:")
+    print(f"Accuracy:  {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1-score:  {f1_score:.4f}")
+
+    print("\nClassification Report:")
+    print(
+        classification_report(
+            test_labels,
+            predictions,
+            zero_division=0,
+        )
+    )
+
+    metrics = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+    }
+
+    return predictions, metrics
+
+
+def display_random_word2vec_predictions(
+    model,
+    word2vec_model,
+    test_tokens,
+    test_labels,
+    sample_count=10,
+):
+    """
+    Display predictions for random Word2Vec testing articles.
+
+    Args:
+        model (MLPClassifier): Trained classifier.
+        word2vec_model (Word2Vec): Trained Word2Vec model.
+        test_tokens (pandas.Series): Testing article token lists.
+        test_labels (pandas.Series): True testing labels.
+        sample_count (int): Number of random samples to display.
+    """
+
+    sample_indices = test_tokens.sample(
+        n=sample_count,
+        random_state=RANDOM_STATE,
+    ).index
+
+    print("\n10 Random Word2Vec + MLP Predictions:")
+
+    for number, index in enumerate(
+        sample_indices,
+        start=1,
+    ):
+        article_tokens = test_tokens.loc[index]
+        actual_category = test_labels.loc[index]
+
+        article_vector = create_document_vector(
+            article_tokens,
+            word2vec_model,
+        ).reshape(1, -1)
+
+        predicted_category = model.predict(
+            article_vector
+        )[0]
+
+        article_preview = " ".join(
+            article_tokens[:25]
+        )
+
+        print(f"\nSample {number}")
+        print(f"Actual:    {actual_category}")
+        print(f"Predicted: {predicted_category}")
+        print(f"Text:      {article_preview}...")
+
+
+
+
+
 def main():
     """
     Run the BBC News Text Classification application.
@@ -748,7 +1228,11 @@ def main():
 
     display_preprocessing_results(processed_data)
 
+    # Run the TF-IDF + MLP classification pipeline.
     run_tfidf_mlp(processed_data)
+
+    # Run the Word2Vec + MLP classification pipeline.
+    run_word2vec_mlp(processed_data)
 
 if __name__ == "__main__":
     main()
