@@ -14,13 +14,27 @@ This program will:
 """
 
 import re
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
-from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
-
+from sklearn.feature_extraction.text import (
+    ENGLISH_STOP_WORDS,
+    TfidfVectorizer,
+)
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    precision_recall_fscore_support,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from copy import deepcopy
 
 # Path to the supplied BBC News dataset.
 DATA_FILE = "data/BBCNews.csv"
+RANDOM_STATE = 42
+TFIDF_OUTPUT_DIR = "output/tfidf"
 
 CATEGORY_NAMES = {
     "business": "Business",
@@ -235,6 +249,486 @@ def display_preprocessing_results(data):
         f"{token_counts.max()}"
     )
 
+def split_dataset(data):
+    """
+    Split the preprocessed BBC News dataset into training, validation,
+    and testing subsets.
+
+    The testing set contains 20% of the complete dataset. The remaining
+    training portion is further divided so validation data can be used
+    to monitor model accuracy during training.
+
+    Args:
+        data (pandas.DataFrame): Preprocessed BBC News dataset.
+
+    Returns:
+        tuple: Training, validation, and testing text and labels.
+    """
+
+    texts = data["processed_text"]
+    labels = data["category"]
+
+    # Keep 20% of the complete dataset separate for final testing.
+    (
+        train_texts,
+        test_texts,
+        train_labels,
+        test_labels,
+    ) = train_test_split(
+        texts,
+        labels,
+        test_size=0.20,
+        random_state=RANDOM_STATE,
+        stratify=labels,
+    )
+
+    # Split the remaining data again to create a validation set.
+    (
+        train_texts,
+        validation_texts,
+        train_labels,
+        validation_labels,
+    ) = train_test_split(
+        train_texts,
+        train_labels,
+        test_size=0.20,
+        random_state=RANDOM_STATE,
+        stratify=train_labels,
+    )
+
+    return (
+        train_texts,
+        validation_texts,
+        test_texts,
+        train_labels,
+        validation_labels,
+        test_labels,
+    )
+
+
+def create_tfidf_features(
+    train_texts,
+    validation_texts,
+    test_texts,
+):
+    """
+    Convert preprocessed BBC News articles into TF-IDF feature vectors.
+
+    The vectorizer is fitted only on the training data to prevent
+    information from the validation or testing sets leaking into training.
+
+    Args:
+        train_texts (pandas.Series): Training article text.
+        validation_texts (pandas.Series): Validation article text.
+        test_texts (pandas.Series): Testing article text.
+
+    Returns:
+        tuple: TF-IDF vectorizer and transformed feature matrices.
+    """
+
+    vectorizer = TfidfVectorizer(
+        max_features=5000,
+    )
+
+    train_features = vectorizer.fit_transform(train_texts)
+
+    validation_features = vectorizer.transform(
+        validation_texts
+    )
+
+    test_features = vectorizer.transform(
+        test_texts
+    )
+
+    return (
+        vectorizer,
+        train_features,
+        validation_features,
+        test_features,
+    )
+
+
+def train_tfidf_mlp(
+    train_features,
+    validation_features,
+    train_labels,
+    validation_labels,
+    epochs=30,
+):
+    """
+    Train an MLP classifier using TF-IDF features.
+
+    The model is trained one epoch at a time so training loss,
+    training accuracy, and validation accuracy can be recorded.
+
+    Args:
+        train_features: TF-IDF training feature matrix.
+        validation_features: TF-IDF validation feature matrix.
+        train_labels (pandas.Series): Training labels.
+        validation_labels (pandas.Series): Validation labels.
+        epochs (int): Number of training epochs.
+
+    Returns:
+        tuple: Trained model and recorded training history.
+    """
+
+    model = MLPClassifier(
+        hidden_layer_sizes=(128,),
+        activation="relu",
+        solver="adam",
+        batch_size=32,
+        learning_rate_init=0.001,
+        random_state=RANDOM_STATE,
+    )
+
+    classes = sorted(train_labels.unique())
+
+    loss_history = []
+    training_accuracy_history = []
+    validation_accuracy_history = []
+
+    best_model = None
+    best_validation_accuracy = 0.0
+    best_epoch = 0
+
+    for epoch in range(epochs):
+        model.partial_fit(
+            train_features,
+            train_labels,
+            classes=classes,
+        )
+
+        training_predictions = model.predict(
+            train_features
+        )
+
+        validation_predictions = model.predict(
+            validation_features
+        )
+
+        training_accuracy = accuracy_score(
+            train_labels,
+            training_predictions,
+        )
+
+        validation_accuracy = accuracy_score(
+            validation_labels,
+            validation_predictions,
+        )
+
+        loss_history.append(model.loss_)
+        training_accuracy_history.append(
+            training_accuracy
+        )
+        validation_accuracy_history.append(
+            validation_accuracy
+        )
+
+        if validation_accuracy > best_validation_accuracy:
+            best_validation_accuracy = validation_accuracy
+            best_epoch = epoch + 1
+            best_model = deepcopy(model)
+
+        print(
+            f"Epoch {epoch + 1:02d}/{epochs} - "
+            f"Loss: {model.loss_:.4f} - "
+            f"Training Accuracy: {training_accuracy:.4f} - "
+            f"Validation Accuracy: {validation_accuracy:.4f}"
+        )
+
+    history = {
+        "loss": loss_history,
+        "training_accuracy": training_accuracy_history,
+        "validation_accuracy": validation_accuracy_history,
+        "best_epoch": best_epoch,
+        "best_validation_accuracy": best_validation_accuracy,
+}
+
+    return best_model, history
+
+
+def display_tfidf_setup(
+    train_labels,
+    validation_labels,
+    test_labels,
+    vectorizer,
+):
+    """
+    Display information about the TF-IDF training setup.
+    """
+
+    print("\nTF-IDF + MLP Dataset Split:")
+    print(f"Training samples: {len(train_labels)}")
+    print(f"Validation samples: {len(validation_labels)}")
+    print(f"Testing samples: {len(test_labels)}")
+
+    print(
+        f"TF-IDF vocabulary size: "
+        f"{len(vectorizer.get_feature_names_out())}"
+    )
+
+def run_tfidf_mlp(data):
+    """
+    Run the TF-IDF + MLP classification pipeline.
+
+    Args:
+        data (pandas.DataFrame): Preprocessed BBC News dataset.
+    """
+
+    (
+        train_texts,
+        validation_texts,
+        test_texts,
+        train_labels,
+        validation_labels,
+        test_labels,
+    ) = split_dataset(data)
+
+    (
+        vectorizer,
+        train_features,
+        validation_features,
+        test_features,
+    ) = create_tfidf_features(
+        train_texts,
+        validation_texts,
+        test_texts,
+    )
+
+    display_tfidf_setup(
+        train_labels,
+        validation_labels,
+        test_labels,
+        vectorizer,
+    )
+
+    model, history = train_tfidf_mlp(
+        train_features,
+        validation_features,
+        train_labels,
+        validation_labels,
+    )
+
+    print(
+        "\nBest validation result:"
+        f"\nEpoch: {history['best_epoch']}"
+        f"\nValidation Accuracy: "
+        f"{history['best_validation_accuracy']:.4f}"
+    )
+
+    save_tfidf_training_curves(history)
+
+    predictions, metrics = evaluate_tfidf_model(
+        model,
+        test_features,
+        test_labels,
+    )
+
+    display_random_predictions(
+        model,
+        vectorizer,
+        test_texts,
+        test_labels,
+    )
+
+    print("\nTF-IDF + MLP pipeline complete.")
+
+
+def save_tfidf_training_curves(history):
+    """
+    Save the TF-IDF + MLP training curves required for Problem 2.
+
+    Args:
+        history (dict): Recorded loss and accuracy values by epoch.
+    """
+
+    Path(TFIDF_OUTPUT_DIR).mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    epochs = range(
+        1,
+        len(history["loss"]) + 1,
+    )
+
+    # -----------------------------------------------------------------------
+    # Training Loss Curve
+    # -----------------------------------------------------------------------
+
+    plt.figure(figsize=(9, 6))
+
+    plt.plot(
+        epochs,
+        history["loss"],
+        marker="o",
+    )
+
+    plt.title("TF-IDF + MLP Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(
+        f"{TFIDF_OUTPUT_DIR}/training_loss.png",
+        dpi=300,
+    )
+
+    plt.close()
+
+    # -----------------------------------------------------------------------
+    # Training and Validation Accuracy Curve
+    # -----------------------------------------------------------------------
+
+    plt.figure(figsize=(9, 6))
+
+    plt.plot(
+        epochs,
+        history["training_accuracy"],
+        marker="o",
+        label="Training Accuracy",
+    )
+
+    plt.plot(
+        epochs,
+        history["validation_accuracy"],
+        marker="o",
+        label="Validation Accuracy",
+    )
+
+    plt.title("TF-IDF + MLP Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(
+        f"{TFIDF_OUTPUT_DIR}/accuracy_curve.png",
+        dpi=300,
+    )
+
+    plt.close()
+
+    print(
+        f"\nTF-IDF training curves saved to: "
+        f"{TFIDF_OUTPUT_DIR}"
+    )
+
+
+def evaluate_tfidf_model(
+    model,
+    test_features,
+    test_labels,
+):
+    """
+    Evaluate the trained TF-IDF + MLP model on the final testing set.
+
+    Args:
+        model (MLPClassifier): Trained MLP classifier.
+        test_features: TF-IDF testing feature matrix.
+        test_labels (pandas.Series): True testing labels.
+
+    Returns:
+        tuple: Test predictions and calculated performance metrics.
+    """
+
+    predictions = model.predict(test_features)
+
+    accuracy = accuracy_score(
+        test_labels,
+        predictions,
+    )
+
+    (
+        precision,
+        recall,
+        f1_score,
+        _,
+    ) = precision_recall_fscore_support(
+        test_labels,
+        predictions,
+        average="weighted",
+        zero_division=0,
+    )
+
+    print("\nTF-IDF + MLP Test Results:")
+
+    print(f"Accuracy:  {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1-score:  {f1_score:.4f}")
+
+    print("\nClassification Report:")
+    print(
+        classification_report(
+            test_labels,
+            predictions,
+            zero_division=0,
+        )
+    )
+
+    metrics = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+    }
+
+    return predictions, metrics
+
+
+def display_random_predictions(
+    model,
+    vectorizer,
+    test_texts,
+    test_labels,
+    sample_count=10,
+):
+    """
+    Display predictions for random testing articles.
+
+    Args:
+        model (MLPClassifier): Trained classifier.
+        vectorizer (TfidfVectorizer): Fitted TF-IDF vectorizer.
+        test_texts (pandas.Series): Testing article text.
+        test_labels (pandas.Series): True testing labels.
+        sample_count (int): Number of random samples to display.
+    """
+
+    sample_indices = test_texts.sample(
+        n=sample_count,
+        random_state=RANDOM_STATE,
+    ).index
+
+    print("\n10 Random TF-IDF + MLP Predictions:")
+
+    for number, index in enumerate(
+        sample_indices,
+        start=1,
+    ):
+        article_text = test_texts.loc[index]
+        actual_category = test_labels.loc[index]
+
+        article_features = vectorizer.transform(
+            [article_text]
+        )
+
+        predicted_category = model.predict(
+            article_features
+        )[0]
+
+        print(f"\nSample {number}")
+        print(f"Actual:    {actual_category}")
+        print(f"Predicted: {predicted_category}")
+
+        print(
+            "Text:      "
+            f"{article_text[:150]}..."
+        )
+
+
 def main():
     """
     Run the BBC News Text Classification application.
@@ -253,6 +747,8 @@ def main():
     processed_data = preprocess_data(cleaned_data)
 
     display_preprocessing_results(processed_data)
+
+    run_tfidf_mlp(processed_data)
 
 if __name__ == "__main__":
     main()
