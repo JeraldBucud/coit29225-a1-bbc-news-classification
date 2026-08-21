@@ -64,3 +64,70 @@ The current preprocessing statistics are:
 - Average tokens per article: `213.17`
 - Minimum tokens in an article: `45`
 - Maximum tokens in an article: `2060`
+
+## Word2Vec + MLP Classification
+
+The second classification approach uses Word2Vec embeddings to represent
+the preprocessed BBC News articles before classification with an MLP.
+
+### Word2Vec Configuration
+
+The Word2Vec model uses:
+
+- Vector size: 100
+- Context window: 5
+- Minimum word count: 2
+- Word2Vec training epochs: 20
+- Random seed: 42
+
+Word2Vec is trained only on the training articles to prevent information
+from the validation and testing sets leaking into feature generation.
+
+Each article is represented by averaging the Word2Vec vectors of the
+recognised words contained in the article.
+
+The trained Word2Vec vocabulary contains 15,146 words.
+
+### MLP Configuration
+
+The Word2Vec feature vectors are classified using the same MLP architecture
+used for the TF-IDF experiment:
+
+- Hidden layer: 128 neurons
+- Activation: ReLU
+- Optimiser: Adam
+- Batch size: 32
+- Initial learning rate: 0.001
+- Maximum training epochs: 30
+- Random seed: 42
+
+The model with the highest validation accuracy is retained for final
+testing.
+
+### Word2Vec Results
+
+The best validation result occurred at epoch 7:
+
+- Validation accuracy: 96.76%
+
+Final testing performance:
+
+| Metric | Result |
+|---|---:|
+| Accuracy | 96.01% |
+| Precision | 96.24% |
+| Recall | 96.01% |
+| F1-score | 96.02% |
+
+The model continued improving its training accuracy after epoch 7 while
+validation performance stopped improving, indicating mild overfitting.
+
+### Generated Word2Vec Figures
+
+The application generates:
+
+`output/word2vec/training_loss.png`
+
+and:
+
+`output/word2vec/accuracy_curve.png`
